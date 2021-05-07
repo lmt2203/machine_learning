@@ -1,0 +1,248 @@
+---
+title: "Linear Methods for Classification I"
+author: "Yifei Sun"
+output: html_document
+
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(caret)
+library(glmnet)
+library(mlbench)  #diabetes dataset
+library(pROC)   #used to generate ROC curve, calculate area under the curve
+library(pdp) 
+library(vip)  #create very important plots
+library(AppliedPredictiveModeling)
+library(e1071)
+```
+
+We use the Pima Indians Diabetes Database for illustration. The data contain 768 observations and 9 variables. The outcome is a binary variable `diabetes`. We start from some simple visualization of the data.
+
+```{r}
+data(PimaIndiansDiabetes)
+dat <- PimaIndiansDiabetes
+head(dat)
+
+theme1 <- transparentTheme(trans = .4)  #transparent color
+trellis.par.set(theme1)
+
+featurePlot(x = dat[, 1:8], 
+            y = dat$diabetes,
+            scales = list(x = list(relation = "free"), 
+                          y = list(relation = "free")),
+            plot = "density", pch = "|", 
+            auto.key = list(columns = 2)
+            )
+
+   
+summary(dat) 
+
+```
+
+
+The data is divided into two parts (training and test). 
+```{r}
+set.seed(1)
+
+rowTrain <- createDataPartition(y = dat$diabetes,
+                                p = 0.75,
+                                list = FALSE)
+```
+
+# Logistic regression and its cousins
+
+## `glm`
+
+```{r}
+contrasts(dat$diabetes)
+
+glm.fit <- glm(diabetes ~ ., 
+               data = dat, 
+               subset = rowTrain, 
+               family = binomial(link = "logit"))
+               
+summary(glm.fit)
+```
+
+
+
+We first consider the simple classifier with a cut-off of 0.5 and evaluate its performance on the test data.
+
+```{r}
+test.pred.prob <- predict(glm.fit, newdata = dat[-rowTrain,],
+                           type = "response")
+                           
+head(test.pred.prob)
+
+test.pred <- rep("neg", length(test.pred.prob))
+test.pred[test.pred.prob>0.5] <- "pos"
+head(test.pred)
+
+# 2x2 table
+confusionMatrix(data = as.factor(test.pred),
+                reference = dat$diabetes[-rowTrain],
+                positive = "pos")
+```
+
+We then plot the test ROC curve. You may also consider a smoothed ROC curve.
+
+```{r}
+roc.glm <- roc(dat$diabetes[-rowTrain], test.pred.prob)
+plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.glm), col = 4, add = TRUE)
+```
+
+We can also fit a logistic regression using caret. This is to compare the cross-validation performance with other models, rather than tuning the model.
+
+```{r}
+# Using caret
+ctrl <- trainControl(method = "cv",
+                     summaryFunction = twoClassSummary, #don't use if have multiple classes
+                     classProbs = TRUE)
+set.seed(1)
+model.glm <- train(x = dat[rowTrain,1:8],
+                   y = dat$diabetes[rowTrain],
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+## Penalized logistic regression
+
+Penalized logistic regression can be fitted using `glmnet`. We use the `train` function to select the optimal tuning parameters.
+
+```{r}
+glmnGrid <- expand.grid(.alpha = seq(0, 1, length = 6),
+                        .lambda = exp(seq(-8, -2, length = 20)))
+set.seed(1)
+model.glmn <- train(x = dat[rowTrain,1:8],
+                    y = dat$diabetes[rowTrain],
+                    method = "glmnet",
+                    tuneGrid = glmnGrid,
+                    metric = "ROC",
+                    trControl = ctrl)
+
+plot(model.glmn, xTrans = function(x) log(x))   
+
+model.glmn$bestTune
+```
+
+## GAM
+
+```{r}
+set.seed(1)
+model.gam <- train(x = dat[rowTrain,1:8],
+                   y = dat$diabetes[rowTrain],
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+
+model.gam$finalModel
+
+# plot(model.gam$finalModel)
+```
+
+
+## MARS
+
+```{r}
+set.seed(1)
+model.mars <- train(x = dat[rowTrain,1:8],
+                    y = dat$diabetes[rowTrain],
+                    method = "earth",
+                    tuneGrid = expand.grid(degree = 1:3, 
+                                           nprune = 2:15),
+                    metric = "ROC",
+                    trControl = ctrl)
+
+plot(model.mars)
+
+coef(model.mars$finalModel) 
+
+pdp::partial(model.mars, pred.var = c("age"), grid.resolution = 200) %>% autoplot()
+
+vip(model.mars$finalModel)
+```
+
+
+```{r, warning=FALSE}
+set.seed(1)
+
+model.knn <- train(x = dat[rowTrain,1:8],
+                   y = dat$diabetes[rowTrain],
+                   method = "knn",
+                   preProcess = c("center","scale"),
+                   tuneGrid = data.frame(k = seq(1,200,by=5)),
+                   trControl = ctrl)
+
+ggplot(model.knn, highlight = TRUE)
+```
+
+
+```{r}
+res <- resamples(list(GLM = model.glm, 
+                      GLMNET = model.glmn, 
+                      GAM = model.gam,
+                      MARS = model.mars,
+                      KNN = model.knn))
+summary(res)
+
+bwplot(res, metric = "ROC")
+```
+
+Now let's look at the test data performance.
+```{r, warning=FALSE}
+glm.pred <- predict(model.glm, newdata = dat[-rowTrain,], type = "prob")[,2]
+glmn.pred <- predict(model.glmn, newdata = dat[-rowTrain,], type = "prob")[,2]
+knn.pred <- predict(model.knn, newdata = dat[-rowTrain,], type = "prob")[,2]
+gam.pred <- predict(model.gam, newdata = dat[-rowTrain,], type = "prob")[,2]
+mars.pred <- predict(model.mars, newdata = dat[-rowTrain,], type = "prob")[,2]
+
+roc.glm <- roc(dat$diabetes[-rowTrain], glm.pred)
+roc.glmn <- roc(dat$diabetes[-rowTrain], glmn.pred)
+roc.knn <- roc(dat$diabetes[-rowTrain], knn.pred)
+roc.gam <- roc(dat$diabetes[-rowTrain], gam.pred)
+roc.mars <- roc(dat$diabetes[-rowTrain], mars.pred)
+
+auc <- c(roc.glm$auc[1], roc.glmn$auc[1], roc.knn$auc[1],
+         roc.gam$auc[1], roc.mars$auc[1])
+
+plot(roc.glm, legacy.axes = TRUE)
+plot(roc.glmn, col = 2, add = TRUE)
+plot(roc.knn, col = 3, add = TRUE)
+plot(roc.gam, col = 4, add = TRUE)
+plot(roc.mars, col = 5, add = TRUE)
+
+modelNames <- c("glm","glmn","knn","gam","mars")
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
+       col = 1:5, lwd = 2)
+```
+
+
+
+```{r}
+summary(Smarket)
+length(Smarket$Direction) #1250
+
+glm.fit=glm(Direction∼Lag1+Lag2+Lag3+Lag4+Lag5+Volume ,
+data=Smarket ,family=binomial )
+
+summary (glm.fit)
+
+glm.probs= predict(glm.fit ,type="response")
+length(glm.probs)  #3686
+
+glm.pred=rep("Down" ,1250)
+length(glm.pred)  #1250
+
+glm.pred[glm.probs >.5]=" Up"
+
+table(glm.pred, Smarket$Direction)
+
+```
+
+

@@ -1,0 +1,240 @@
+---
+title: "Ridge Regression and Lasso"
+author: "Yifei Sun"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(ISLR)
+library(glmnet)
+library(caret)
+library(corrplot)
+library(plotmo)
+```
+
+Predict a baseball player’s salary on the basis of various statistics associated with performance in the previous year. Use `?Hitters` for more details.
+
+```{r}
+#Load data from ISLR package
+data(Hitters)  
+
+# delete rows containing the missing data
+Hitters <- na.omit(Hitters)
+Hitters2 <- model.matrix(Salary ~ ., Hitters)[ ,-1]  #remove 1st column
+
+set.seed(1)
+trainRows <- createDataPartition(y = Hitters$Salary, p = 0.8, list = FALSE)
+
+# matrix of predictors (glmnet uses input matrix)
+x <- Hitters2[trainRows,]
+# vector of response
+y <- Hitters$Salary[trainRows]
+
+corrplot(cor(x), method = "circle", type = "full")
+
+corrplot(cor(x), method = "circle", type = "upper")
+#when visualize general matrix, is.corr = FALSE
+```
+
+# Using `glmnet`
+## Ridge 
+
+`alpha` is the elastic net mixing parameter. `alpha=1` is the lasso penalty, and `alpha=0` the ridge penalty. `glmnet()` function standardizes the independent variables by default (The coefficients are always returned on the original scale). 
+
+```{r}
+# fit the ridge regression (alpha = 0) with a sequence of lambdas
+ridge.mod <- glmnet(x = x, y = y, 
+                    standardize = TRUE,
+                    alpha = 0, 
+                    lambda = exp(seq(10, -2, length = 100)))
+```
+
+`coef(ridge.mod)` gives the coefficient matrix. Each column is the fit corresponding to one lambda value.
+
+```{r}
+mat.coef <- coef(ridge.mod)
+dim(mat.coef)
+```
+
+
+### Trace plot
+There are two functions for generating the trace plot.
+```{r}
+# plot(ridge.mod, xvar = "lambda", label = TRUE)
+plot_glmnet(ridge.mod, xvar = "rlambda", label = 19)
+```
+
+### Cross-validation
+We use cross-validation to determine the optimal value of `lambda`. The two vertical lines are the for minimal MSE and 1SE rule. The 1SE rule gives the most regularized model such that error is within one standard error of the minimum.
+
+```{r}
+set.seed(2)
+cv.ridge <- cv.glmnet(x, y, 
+                      # type.measure = "mse",
+                      alpha = 0, 
+                      lambda = exp(seq(10, -2, length = 100)))
+
+# set.seed(2)
+# cv.ridge <- cv.glmnet(x, y, alpha = 0, nlambda = 200)
+
+plot(cv.ridge)
+abline(h = (cv.ridge$cvm + cv.ridge$cvsd)[which.min(cv.ridge$cvm)], col = 4, lwd = 2)
+
+# min CV MSE
+cv.ridge$lambda.min
+
+# the 1SE rule
+cv.ridge$lambda.1se
+```
+
+
+### Coefficients of the final model
+
+Get the coefficients of the optimal model. `s` is value of the penalty parameter `lambda` at which predictions are required.
+
+```{r}
+# extract coefficients
+predict(cv.ridge, s = cv.ridge$lambda.min, type = "coefficients") 
+
+# make prediction
+head(predict(cv.ridge, newx = Hitters2[-trainRows,], 
+             s = "lambda.min", type = "response")) 
+
+# predict(cv.ridge, s = "lambda.min", type = "coefficients") 
+# predict(cv.ridge, s = "lambda.1se", type = "coefficients") 
+# predict(ridge.mod, s = cv.ridge$lambda.min, type = "coefficients")
+```
+
+
+## Lasso 
+The syntax is along the same line as ridge regression. Now we use `alpha = 1`.
+
+```{r}
+set.seed(2)  #if compare the models, MUST set seed
+
+cv.lasso <- cv.glmnet(x, y, 
+                      alpha = 1, 
+                      lambda = exp(seq(5, -1, length = 100)))
+
+cv.lasso$lambda.min
+```
+
+```{r}
+#CV plot 
+plot(cv.lasso)
+```
+
+```{r}
+# cv.lasso$glmnet.fit is a fitted glmnet object using the full training data
+# plot(cv.lasso$glmnet.fit, xvar = "lambda", label=TRUE)
+plot_glmnet(cv.lasso$glmnet.fit)
+```
+
+
+```{r}
+predict(cv.lasso, s = "lambda.min", type = "coefficients")
+
+head(predict(cv.lasso, newx = Hitters2[-trainRows,], s = "lambda.min", type = "response"))
+```
+
+# Using `caret` 
+
+## Ridge
+
+```{r}
+ctrl1 <- trainControl(method = "repeatedcv", number = 10, repeats = 5) #repeat 10fold CV 5 times
+
+# you can try other options
+
+set.seed(2)
+ridge.fit <- train(x, y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = 0, 
+                                          lambda = exp(seq(10, -2, length=100))),
+                   # preProc = c("center", "scale"),
+                   trControl = ctrl1)
+
+plot(ridge.fit, xTrans = log)
+
+ridge.fit$bestTune
+
+# extract coefficients in the final model
+coef(ridge.fit$finalModel, s = ridge.fit$bestTune$lambda)
+```
+
+## Lasso
+
+```{r}
+set.seed(2)
+lasso.fit <- train(x, y,
+                   method = "glmnet",
+                   tuneGrid = expand.grid(alpha = 1, 
+                                          lambda = exp(seq(5, -1, length=100))),
+                   trControl = ctrl1)
+plot(lasso.fit, xTrans = log)
+
+lasso.fit$bestTune
+
+coef(lasso.fit$finalModel, lasso.fit$bestTune$lambda)
+```
+
+## Elastic net
+
+For elastic net, lambda is somewhere between 0 and 1 => need to use expand.grid
+
+```{r}
+set.seed(2)
+enet.fit <- train(x, y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = seq(0, 1, length = 11), 
+                                         lambda = exp(seq(2, -2, length = 50))),
+                  trControl = ctrl1)
+enet.fit$bestTune
+
+plot(enet.fit)
+
+coef(enet.fit$finalModel, enet.fit$bestTune$lambda)
+```
+
+## Comparing different models
+
+```{r, fig.width=5}
+set.seed(2)
+lm.fit <- train(x, y,
+                method = "lm",
+                trControl = ctrl1)
+
+resamp <- resamples(list(enet = enet.fit, lasso = lasso.fit, ridge = ridge.fit, lm = lm.fit)) #enet give the smallest MSE
+summary(resamp)
+
+bwplot(resamp, metric = "RMSE")
+```
+
+## Prediction
+
+```{r}
+enet.pred <- predict(enet.fit, newdata = Hitters2[-trainRows,])
+# test error
+mean((enet.pred - Hitters$Salary[-trainRows])^2)
+
+sqrt(mean((enet.pred - Hitters$Salary[-trainRows])^2))
+```

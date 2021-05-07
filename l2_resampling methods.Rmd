@@ -1,0 +1,188 @@
+---
+title: "Resampling Methods for Assessing Model Accuracy"
+author: "Linh Tran"
+date: "1/24/2021"
+output:
+   html_document:
+     toc: true
+---
+
+```{r setup, include=FALSE}
+library(FNN)
+library(caret)
+```
+
+# Data generation
+
+For illustration, we use a simulateddataset with two predictors.
+
+```{r}
+# Data generating function - you can replace this with your own function
+gen_data <-function(N) {
+  X <-rnorm(N, mean = 1)
+  X2 <-rnorm(N, mean = 1)
+  eps <-rnorm(N, sd = .5)
+  Y <-sin(X) + (X2)^2 + eps
+  data.frame(Y = Y, X = X, X2 = X2)
+}
+
+set.seed(2021)
+
+# generate the *training* data
+N <- 200
+
+trainData <- gen_data(N)
+
+```
+
+# Data splitting functions
+
+## Training/Validation splitting
+
+Sampling in createDataPartition(): For factory y (e.g., classification), the random sampling is done within the levels of y in an attempt to balance the class distributions within the splits. For numeric y, the sample is split into groups section based on percentiles and sampling is done within these subgroups.
+
+```{r}
+vsSplits <- createDataPartition (y = trainData$Y,
+                                 times = 2,
+                                 p = 0.8,
+                                 groups = 5,
+                                 list = FALSE)
+
+head(vsSplits)
+dim(vsSplits) #matrix with 160 rows and 2 columns
+str(vsSplits)
+
+#can also use this:
+sample(x = 1:200, size = 200 * 0.8)
+
+```
+
+## (Repeated) K-fold CV
+
+Sometimes we can repeat the K-fold CV multiple times and then calculate the average prediction error.
+
+```{r}
+set.seed(1)
+
+# ten-fold CV
+cvSplits <- createFolds(y = trainData$Y,
+                        k = 10,
+                        returnTrain = TRUE)  #by default, list = TRUE
+
+str(cvSplits)
+```
+
+
+```{r}
+set.seed(1)
+
+# repeated ten-fold CV
+rcvSplits <- createMultiFolds(y = trainData$Y,
+                              k = 10,
+                              times = 5)
+
+# Foldi.Repj - the ith section (of k) of the jth cross-validation set
+length(rcvSplits)
+```
+
+A simple example using for loops:
+
+```{r}
+K = length(rcvSplits)
+mseK_lm = rep(NA, K)
+mseK_knn = rep(NA, K)
+
+
+for(k in 1:K) {
+  trRows = rcvSplits[[k]]
+  
+  fit_lm = lm(Y ~ X + X2, data = trainData[trRows, ])
+  pred_lm = predict(fit_lm, trainData[-trRows, ])
+  
+  pred_knn = knn.reg(train = trainData[trRows, 2:3],
+                     test = trainData[-trRows, 2:3],
+                     y = trainData$Y[trRows], k = 3)
+  
+  mseK_lm[k] = mean((trainData$Y[-trRows] - pred_lm)^2)
+  mseK_knn[k] = mean((trainData$Y[-trRows] - pred_knn$pred)^2)
+}
+
+# K-fold MSE
+c(mean(mseK_lm), mean(mseK_knn))
+```
+
+
+# Specify the resampling method using `trainControl()` - can use instead of for loop
+
+All the resampling methods in the slides are available in `trainControl()`
+
+```{r}
+# K-fold CV
+ctrl1 = trainControl(method = "cv", number = 10)
+
+# LOOCV
+ctrl2 = trainControl(method = "LOOCV")
+
+# Leave-group-out / Monte Carlo CV
+ctrl3 = trainControl(method = "LGOCV", p = 0.75, number = 50)
+
+# 632 bootstrap
+ctrl4 = trainControl(method = "repeatedcv", repeats = 5, number = 10)
+
+# repeated K-fold CV
+ctrl5 = trainControl(method = "repeatedcv", repeats = 5, number = 10)
+
+# only fit one model to the entire training set
+ctrl6 = trainControl(method = "none")
+
+# user-specified folds
+ctrl7 =  trainControl(index = rcvSplits)
+
+set.seed(1)
+
+lmFit = train(Y ~ .,
+              data = trainData,
+              method = "lm",
+              trControl = ctrl5)
+
+set.seed(1)
+
+knnFit = train(Y ~ .,
+               data = trainData,
+               method = "knn",
+               trControl = ctrl5)
+
+# same training/validation splits?
+identical(lmFit$control$index,
+          knnFit$control$index)
+
+```
+
+
+```{r}
+# compare with mean(mseK_lm) above
+lmFit2 = train(Y ~ . ,
+               data = trainData,
+               method = "lm",
+               trControl = ctrl7)
+
+knnFit2 = train(Y ~.,
+                data = trainData,
+                method = "knn",
+                tuneGrid = data.frame(k = 3),
+                trControl = ctrl7)
+
+#compare if two objects are the same 
+
+identical(mean((lmFit2$resample$RMSE)^2), 
+          mean(mseK_lm))
+```
+
+To compare these two models based on their cross-validation statistics, the `resamples()` function can be used with models that share a common set of resampled datsets.
+
+```{r}
+resamp = resamples(list (lm = lmFit, knn = knnFit))
+
+summary(resamp)
+```
+

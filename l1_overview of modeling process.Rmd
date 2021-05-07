@@ -1,0 +1,163 @@
+---
+title: "An Overview of Modeling Process"
+author: "Linh Tran"
+date: "1/21/2021"
+output:
+   html_document: 
+     toc: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+
+library(caret)
+library(FNN)# knn.reg()
+library(doBy)# which.minn()
+
+set.seed(2021)
+```
+
+# Generate a simulated dataset with two predictors
+
+```{r}
+#Data generating
+
+genData = function(N) {
+  X = rnorm(N, mean = 1) #sd by default is 1
+  X2 = rnorm(N, mean = 1)
+  eps = rnorm(N, sd = 0.5) #random error (mean = 0, sd = 0.5)
+  Y = sin(X) + (X2)^2 + eps
+  data.frame(Y = Y, X = X, X2 = X2)
+}
+
+dat = genData(500)
+```
+
+# Data partition
+
+Use p = 0.8 or 80% as train data.\
+y = dat$Y or y = dat[, 1]
+
+```{r}
+indexTrain = createDataPartition(y = dat$Y, p = 0.8, list = FALSE) 
+trainData = dat[indexTrain, ]
+testData = dat[-indexTrain, ]
+
+head(trainData)
+dim(trainData)
+
+```
+ 
+# Data Visualization
+
+The function `featurePlot()` in `caret` is a wrapper for different lattice plots to visualize multivariate data. The various graphical parameters (color, line type, background, etc) that control the lack of Trellis displays are highly customizable. You can explore `trellis.par.set()` after class
+
+```{r, fig.height = 2}
+theme1 <-trellis.par.get()
+theme1$plot.symbol$col <-rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <-rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <-rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+
+featurePlot(x = trainData[ , 2:3],
+            y = trainData[ ,1],
+            plot = "scatter",
+            type = c("p", "smooth"),   #p = point
+            span = .5, #control the smoothness of the curve
+            labels = c("Predictors", "Y"),
+            layout = c(2, 1)) #2 cols 1 row
+```
+
+# What is k-Nearest Neighbour?
+
+Now let's make prediction for a new data point with X = 0 and X2 = 0.
+
+```{r}
+# Scatter plot of X2 vs. X
+p <- ggplot(trainData, aes(x = X, y = X2)) +
+  geom_point() + 
+  geom_point(aes(x = 0, y = 0), colour = "blue")
+
+p
+```
+
+Find the 5 nearest neighbours of (0,0)
+
+```{r}
+dist0 <- sqrt( (trainData[,2]-0)^2 + (trainData[,3]-0)^2 )# calculate the distances
+neighbor0 <- which.minn(dist0, n = 5)# indices of the 5 smallest distances
+```
+
+Visualize the neighbour
+
+```{r}
+p + geom_point(data = trainData[neighbor0, ],
+              colour = "red")
+```
+
+calculate the mean outcome of the nearest neighbours as the predicted outcome
+
+```{r}
+mean(trainData[neighbor0,1])
+```
+
+Using the `knn.reg()` function
+
+```{r}
+knn.reg(train = trainData[, 2:3],
+        test = c(0,0),
+        y = trainData[, 1],
+        k = 5)
+```
+
+# Model training
+
+We consider two candidate models: KNN and linear regression 
+
+```{r}
+kGrid = expand.grid(k = seq(from = 1, to = 40, by = 1))
+
+set.seed(1)
+
+fit.knn = train(Y ~ .,
+                data = trainData,
+                method = "knn",
+                trControl = trainControl(method = "cv", number = 10), #ten-fold CV
+                tuneGrid = kGrid) 
+
+ggplot(fit.knn) 
+#use the lowest point as the optimal turning parameter
+```
+
+The kNN approach (k = `r fit.knn$bestTune[1,1]`) or k = 3 was selected as the final model.
+
+```{r}
+set.seed(1)
+
+fit.lm = train(Y ~ .,
+               data = trainData,
+               method = "lm",
+               trControl = trainControl(method = "cv", number = 10)
+               )
+```
+
+Which is better?
+
+```{r}
+rs = resamples(list(knn = fit.knn, lm = fit.lm))
+
+summary(rs, metric = "RMSE")
+```
+
+## Evaluating the model on the test data
+
+```{r}
+pred.knn = predict(fit.knn, newdata = testData)
+pred.lm = predict(fit.lm, newdata = testData)
+
+RMSE(pred.knn, testData [, 1])
+RMSE(pred.lm, testData[, 1])
+```
+

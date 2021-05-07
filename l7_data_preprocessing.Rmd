@@ -1,0 +1,170 @@
+---
+title: "Data Preprocessing"
+author: "Linh Tran"
+date: "3/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(caret)
+
+# for visualization
+library(visdat)
+library(gridExtra)
+library(mvtnorm)
+
+# example
+library(ISLR)
+library(RANN)
+```
+
+# Transforming Predictors
+
+Although not always required, transforming the variables may lead to improvement in prediction, especially for parametric models.\
+
+For example, one may consider the Box-Cox transformation, which finds an appropriate transformation from a family of power transformation that will transform the variables as close as possible to a normal distribution. One may also consider the Yeo-Johnson transformation if the variables are not strictly positive. 
+
+```{r}
+# generate a simulated dataset
+
+gen_data <- function(N)
+{
+  X <- rmvnorm(N, mean = c(1,-1),
+               sigma = matrix(c(1, 0.5, 0.5, 1), ncol = 2))
+  X1 <- exp(X[,1])
+  X2 <- X[,2]
+  X3 <- rep(1, N)
+  eps <- rnorm(N, sd = .5)
+  Y <- log(X1) + X2 + eps
+  
+  data.frame(Y = Y, X1 = X1, X2 = X2, X3 = X3) #X3 predictor is useless
+}
+
+set.seed(2021)
+
+trainData <- gen_data(100)
+testData <- gen_data(50)
+
+x <- trainData[, -1]
+y <- trainData[, 1]
+x2 <- testData[, -1]
+y2 <- testData[, 1]
+```
+
+## preProcess in `train()`
+
+```{r}
+# Box-Cox transformation of predictor, remove ze
+
+fit.lm <- train(x, y,
+                preProcess =c("BoxCox", "zv"),  #preProcess = c(center,scale); zv = zero variance => remove predictor that have zv
+                method = "lm",
+                trControl = trainControl(method = "none"))
+
+fit.lm
+
+pred.lm <- predict(fit.lm, newdata = x2)
+
+fit.lm$preProcess
+fit.lm$preProcess$bc
+
+# only X1 is transformed with estimated lambda = -0.1
+# X2 is generated from a normal distribution so no transformation needed
+
+```
+
+## preProcess()
+
+The transformation is computed using the training data. Then it is applied to both training and test data.
+
+```{r}
+pp <- preProcess(x, method =c("BoxCox", "zv"))   # x = training data
+
+# transformed predictor matrix (training)
+
+x_pp <- predict(pp, x)
+
+head(x_pp)
+
+
+# transformed predictor matrix (test)
+x2_pp <-predict(pp, x2)
+
+head(x2_pp)
+```
+
+# Missing Data
+
+There are different mechanisms for missing data: missing completely at random (MCAR), missing at random (MAR), missing not at random (MNAR). MAR means that the missingness depends only on the observed data; MNAR means that the missingness further depends on the missing data. The missing data mechanism determines how you handle the missing data. For example, under MAR, you may consider imputation methods; under MNAR, you may consider treating missingness as an attribute. 
+
+```{r}
+gen_data <-function(N)
+  {
+  X <-rmvnorm(N, mean =c(1,-1),
+              sigma =matrix(c(1,0.5,0.5,1), ncol = 2))
+  X1 <- X[,1]
+  X2 <- X[,2]
+  eps <-rnorm(N, sd = .5)
+  Y <- X1 + X2 + eps
+  
+  # which X1 observations are missing
+  ind_missing <- rbinom(N, size = 1, prob = exp(X2/2)/(1+exp(X2/2))) #missing probability depends on X2 (on observed => MAR), but if depends on X1 then it comes MNAR.
+  
+  X1m <- X1
+  X1m[ind_missing==1] <- NA
+  
+  data.frame(Y = Y, X1m = X1m, X2 = X2, X1 = X1)
+  }
+
+set.seed(2021)
+
+dat <- gen_data(500)
+dat2 <- gen_data(100)
+trainData <- dat[,1:3]
+testData <- dat2[,1:3]
+
+vis_miss(trainData)
+```
+
+
+## preProcess()
+
+```{r}
+trainX <- trainData[,c(2:3)]
+knnImp <- preProcess(trainX, method = "knnImpute", k = 3) #taking nearest 3 neighbors, closer to original data
+bagImp <- preProcess(trainX, method = "bagImpute") #use the median for all the missing values
+medImp <- preProcess(trainX, method = "medianImpute")
+
+#apply to training data
+trainX_knn <- predict(knnImp, trainX)
+trainX_bag <- predict(bagImp, trainX)
+trainX_med <- predict(medImp, trainX)
+
+#apply to testing data
+testData_knn <- predict(knnImp, testData)
+testData_bag <- predict(bagImp, testData)
+testData_med <- predict(medImp, testData)
+
+head(trainX)
+head(trainX_med)
+head(trainX_knn) #X2 was centered and scaled
+head(trainX_bag)
+```
+
+Try to avoid median imputation. 
+
+## preProcess in train()
+
+```{r}
+fit.lm <- train(x = trainData[,c(2,3)],
+                y = trainData$Y,
+                preProcess =c("knnImpute"),# bagImpute/medianImpute
+                method = "lm",
+                trControl =trainControl(method = "none",
+                                        preProcOptions =list(k = 5)))
+
+pred.lm <-predict(fit.lm, newdata = testData)
+
+mean((testData$Y-pred.lm)^2)
+```
+

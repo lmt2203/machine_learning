@@ -1,0 +1,111 @@
+---
+title: 'Linear Regression: A Revisit'
+author: "Linh Tran"
+date: "1/26/2021"
+output: 
+   html_document:
+     toc: true
+---
+
+```{r setup, include=FALSE}
+
+install.packages("summarytools", repos = "http://cran.us.r-project.org")
+install.packages("RNHANES", repos = "http://cran.us.r-project.org")
+
+library(RNHANES)
+library(tidyverse)
+library(summarytools)
+library(leaps)
+```
+
+# Data
+
+In this example, we assess the association between high density lipoprotein (HDL) cholesterol and BMI, and other demographic factors (age, gender, race) using the NHANES data (https://wwwn.cdc.gov/nhcs/nhanes/ContinuousNhanes/Defaults.aspx?BeginYear=2001). The data can be downloaded using functions in the package RNHANES.
+
+```{r}
+dat = nhanes_load_data(file_name = "l13_B", year = "2001-2002")
+
+dat = dat %>% 
+  left_join(nhanes_load_data("BMX_B", "2001-2002"), by="SEQN")%>%
+  left_join(nhanes_load_data("BPX_B", "2001-2002"), by="SEQN")%>%
+  left_join(nhanes_load_data("DEMO_B", "2001-2002"), by="SEQN")
+
+dat = dat%>%
+  select(SEQN, RIAGENDR, RIDRETH1, RIDAGEYR, BMXBMI, BPXSY1, LBDHDL)%>%
+  mutate(RIAGENDR =as_factor(RIAGENDR), RIDRETH1 =as_factor(RIDRETH1))
+
+colnames(dat) <- c("ID", "gender", "race", "age", "bmi", "sbp", "hdl")
+
+dat <- na.omit(dat)
+
+dat
+```
+
+Summary statistics of the predictors and the response
+
+```{r}
+st_options(plain.ascii = FALSE,
+           style = "rmarkdown",
+           dfSummary.silent = TRUE,
+           footnote = NA,
+           subtitle.emphasis = FALSE)
+
+dfSummary(dat[, -1])
+```
+
+
+
+# Multiple Linear Regression: A small experiment
+
+
+```{r}
+fit1 <-lm(hdl ~ bmi+age+gender+race+sbp,
+          data = dat)
+fit1
+
+fit2 <-lm(bmi ~ age+gender+race+sbp,
+          data = dat)
+fit2
+
+r2 <- fit2$residuals
+r2 #residuals from second model
+mean(r2)  #close to 0
+
+fit3 <-lm(hdl ~ r2,data = dat)
+fit3  #same coefficients as bmi
+
+coef(fit1)["bmi"]  
+coef(fit3)["r2"]  
+
+```
+
+
+If bmi highly correlated to any of the other variables => residual from the fit2 will be very close to 0. => If we regress Y on smt that is very highly correlated (residual close to 0) then variance will be very large.
+\
+2-step procedures: (1) use bmi as response variable and get residual, (2) simple linear regression with residual as variable and get the same coefficient. => impact of correlation  
+
+# Prediction interval vs. Confidence interval
+
+
+```{r}
+newdata = dat[1, ] #just looking at 1st observation
+
+predict(fit1, newdata, interval = "confidence")
+
+
+predict(fit1, newdata, interval = "predict") #much wider
+
+
+```
+
+
+# Best subset model selection
+
+```{r}
+regsubsets0bj = regsubsets(hdl ~ bmi + age + gender + race + sbp, data = dat,
+                           method = "exhaustive", nbest = 1)
+
+plot(regsubsets0bj, scale = "bic")
+```
+
+We want BIC as high as possible. This just provides a reference but shouldn't based on this to select the final model. 

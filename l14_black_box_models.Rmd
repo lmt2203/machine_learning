@@ -1,0 +1,138 @@
+---
+title: "Understanding Black-Box Models"
+author: "Linh Tran"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(ISLR)
+library(caret)
+
+library(vip)
+library(pdp)
+
+library(lime) #Local Interpretable Model-agnostic Explanations
+```
+
+Predict a baseball player’s salary on the basis of various statistics associated with performance in the previous year. 
+
+```{r}
+data(Hitters)
+Hitters <- na.omit(Hitters)
+head(Hitters)
+dim(Hitters)
+
+set.seed(2021)
+trRows <- createDataPartition(Hitters$Salary,
+                              p = .75,
+                              list = F)
+
+ctrl <- trainControl(method = "cv")
+
+# taken from random forest - presumably this is optimal model 
+rf.grid <- expand.grid(mtry = 1:6,
+                       splitrule = "variance",
+                       min.node.size = 1:6)
+
+set.seed(1)
+rf.fit <- train(Salary~., Hitters[trRows,], 
+                method = "ranger",
+                tuneGrid = rf.grid,
+                trControl = ctrl)
+```
+
+
+
+
+# Variable importance
+
+```{r}
+# You can use built-in VIMP in random forests
+# The following code is to illustrate vip() in calculating VIMP in a general case
+set.seed(1)
+vip(rf.fit, 
+    method = "permute", #can also check `vi_permute` 
+    train = Hitters[trRows,],
+    target = "Salary",
+    metric = "RMSE",
+    nsim = 10, #number of permutation
+    pred_wrapper = predict,
+    geom = "boxplot", 
+    all_permutations = TRUE,
+    mapping = aes_string(fill = "Variable")) 
+    #another argument `num_features` = 10 by default => plot the top 10 most important variables
+    
+
+```
+
+# Partial dependence plots (PDPs)
+
+After the most relevant variables have been identified, the next step is to attempt to understand how the response variable changes based on these variables.
+
+PDPs plot the change in the average predicted value as specified feature(s) vary over their marginal distribution. 
+
+```{r, fig.width = 8, fig.height = 4}
+# plot pdp for var CRBI
+pdp1.rf <- rf.fit %>% 
+  partial(pred.var = c("CRBI")) %>%
+  autoplot(train = Hitters[trRows,], rug = TRUE) 
+
+# `chull` = compact hull | weather you want to restrict the plot within a compact hull region
+# distribution of predictors 
+pdp2.rf <- rf.fit %>% 
+  partial(pred.var = c("CRBI","CAtBat"), chull = TRUE) %>%
+  autoplot(train = Hitters[trRows,], rug = TRUE) 
+
+grid.arrange(pdp1.rf, pdp2.rf, nrow = 1)
+```
+
+# Individual conditional expectation (ICE) curves
+
+ICE curves are an extension of PDP plots but, rather than plot the average marginal effect on the response variable, we plot the change in the predicted response variable for each observation as we vary each predictor variable. 
+
+```{r, fig.width = 8, fig.height = 4}
+ice1.rf <- rf.fit %>% 
+  partial(pred.var = "CRBI", 
+          grid.resolution = 100,
+          ice = TRUE) %>%
+  autoplot(train = Hitters, alpha = .1) +
+  ggtitle("ICE, not centered") 
+
+ice2.rf <- rf.fit %>% 
+  partial(pred.var = "CRBI", 
+          grid.resolution = 100,
+          ice = TRUE) %>%
+  autoplot(train = Hitters, alpha = .1, 
+           center = TRUE) +
+  ggtitle("ICE, centered") 
+
+
+grid.arrange(ice1.rf, ice2.rf, nrow = 1)
+```
+
+
+# lime
+
+Once an explainer has been created using the `lime()` function, it can be used to explain the result of the model on new observations. The `explain()` function takes new observation along with the explainer and returns a data.frame with prediction explanations, one observation per row. The function `plot_features()` creates a compact visual representation of the explanations for each case and label combination in an explanation. Each extracted feature is shown with its weight, thus giving the importance of the feature in the label prediction.
+
+```{r, warning=FALSE, fig.height = 10}
+explainer.rf <- lime(Hitters[trRows,-19], rf.fit) #return quantile
+#default argument `n_bins = 4` corresponding to quantiles: Q1, Q2, Q3 => (-infinity, Q1], [Q1, Q2),...(Q3, infinity]
+
+new_obs <- Hitters[-trRows,-19][1:10,]
+explanation.obs <- explain(new_obs,
+                           explainer.rf, 
+                           n_features = 10) #simple model will contain 10 features
+
+# Show the impact of 10 variables in making final prediction
+plot_features(explanation.obs) #plot coefficients. (explanation fit if low => model is less reliable, R-squared is low). Players who have high salaries tend to have more blue colors (more positive coefficients)
+
+# Give the same info but different styles. Better idea of the different quartiles. 
+plot_explanations(explanation.obs)
+```
+
+

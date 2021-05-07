@@ -1,0 +1,296 @@
+---
+title: "Splines/Local reg/GAM/MARS"
+author: "Linh Tran"
+date: "3/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(caret)
+library(splines)   #give out natural cubic splines
+library(mgcv)  #mainly use for gam model
+library(pdp)   #partial dependent plot to visualize multivariate models
+library(earth)  # fit MARS model
+library(tidyverse)
+library(ggplot2)
+library(lasso2) # only for data
+```
+
+We will use a prostate cancer dataset for illustration. The data come from a study that examined the association between the level of prostate specific antigen (PSA) and a number of clinical measures in men who were about to receive a radical prostatectomy. The dataset can be found in the package `lasso2`. The response is the log PSA level (`lpsa`).
+
+```{r}
+data(Prostate)
+
+
+# matrix of predictors 
+x <- model.matrix(lpsa~.,Prostate)[,-1]
+
+# vector of response
+y <- Prostate$lpsa
+```
+
+Dataset is small=> can use all data for training data. \
+
+We use scatterplot to explore the relationship between the log PSA level and other variables. The variable percentage Gleason score 4/5 (`pgg45`) shows some potentially nonlinear trend.
+
+```{r}
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+featurePlot(x, y, plot = "scatter", labels = c("","Y"),
+            type = c("p"), layout = c(4, 2))
+```
+
+In what follows, we first fit univariate nonlinear models to investage the association between `lpsa` and `pgg45` for illustration. We then build multivariate prediction models for prediction.
+
+## Polynomial regression
+The function `poly()` returns a matrix whose columns are a basis of orthogonal polynomials, which essentially means that each column is a linear combination of `pgg45`, `pgg45^2`, `pgg45^3`, and `pgg45^4`.
+
+```{r}
+fit1 <- lm(lpsa~pgg45, data = Prostate)  #simple linear reg
+
+fit2 <- lm(lpsa~poly(pgg45,2), data = Prostate)  #order of 2 quadratic function of degree 2
+fit3 <- lm(lpsa~poly(pgg45,3), data = Prostate)
+fit4 <- lm(lpsa~poly(pgg45,4), data = Prostate) 
+fit5 <- lm(lpsa~poly(pgg45,5), data = Prostate) 
+
+
+cor(poly(Prostate$pgg45,3))  #use the default raw = F
+cor(poly(Prostate$pgg45,3, raw = TRUE))
+```
+
+Use `anova()` to test the null hypothesis that a simpler model is sufficient to explain the data against the alternative hypothesis that a more complex model is required. In order to use ANOVA, the models must be nested.
+
+```{r}
+anova(fit1,fit2,fit3,fit4,fit5)
+
+#model 2 has lowest p-value. Adding third order term doesn't help the fit too much.
+```
+
+## Step function
+The function `cut()` can be used to create step function basis. The argument `breaks` can be used to specify the cutpoints.
+
+```{r}
+fit.sf <- lm(lpsa~cut(pgg45, 4), data = Prostate)
+
+summary(fit.sf)
+```
+
+
+
+## Cubic splines
+
+We fit a cubic spline model. Degree of freedom `df` (or knots `knots`) need to be specified. The argument `degree` denotes the degree of the piecewise polynomial; default is 3 for cubic splines.
+
+```{r}
+fit.bs <- lm(lpsa ~ bs(pgg45, df = 4), data = Prostate)  # +1 intercept = 5 df
+#fit.bs <- lm(lpsa ~ bs(pgg45, df = 5, intercept = TRUE), data = Prostate)
+
+pgg45lims <- range(Prostate$pgg45)
+pgg45.grid <- seq(from = pgg45lims[1],to = pgg45lims[2])
+
+pred.bs <- predict(fit.bs,
+                   newdata = data.frame(pgg45=pgg45.grid),
+                   se = TRUE)
+
+pred.bs.df <- data.frame(pred = pred.bs$fit,
+                         pgg45 = pgg45.grid,
+                         upper = pred.bs$fit+2*pred.bs$se,
+                         lower = pred.bs$fit-2*pred.bs$se)
+
+p <- ggplot(data = Prostate, aes(x = pgg45, y = lpsa)) +
+     geom_point(color = rgb(.2, .4, .2, .5))
+
+p + geom_line(aes(x = pgg45, y = pred), data = pred.bs.df,
+              color = rgb(.8, .1, .1, 1)) +
+    geom_line(aes(x = pgg45, y = upper), data = pred.bs.df,
+              linetype = 2, col = "grey50") + 
+    geom_line(aes(x = pgg45, y = lower), data = pred.bs.df,
+              linetype = 2, col = "grey50") + theme_bw()
+```
+
+
+### B-spline basis for cubic splines
+
+```{r, echo=FALSE}
+df.bs <- 7
+z <- seq(from = 0, to = 100, by = 1)
+bsz <- data.frame(bs(z, df = df.bs, intercept = TRUE))
+names(bsz) <- paste("basis", 1:df.bs)
+bsz$z <- z
+
+bsz2 <- bsz %>% 
+  gather(paste("basis", 1:df.bs), key = basis.name, value='y')
+
+ggplot(data = bsz2, aes(x=z, y=y)) +
+  geom_line(aes(color=basis.name))
+```
+
+
+## Natural cubic splines
+We then fit a natural cubic spline model that extrapolate linearly beyond the boundary knots.
+```{r}
+fit.ns <- lm(lpsa~ns(pgg45, df = 2), data = Prostate)  #3 df with 1 intercept
+#the higher the df, the more wiggly the fit is
+
+pred.ns <- predict(fit.ns,
+                   newdata = data.frame(pgg45=pgg45.grid),
+                   se=TRUE)
+
+pred.ns.df <- data.frame(pred = pred.ns$fit,
+                         pgg45 = pgg45.grid,
+                         upper = pred.ns$fit+2*pred.ns$se,
+                         lower = pred.ns$fit-2*pred.ns$se)
+
+
+p + geom_line(aes(x = pgg45, y = pred), data = pred.ns.df,
+              color = rgb(.8, .1, .1, 1)) +
+    geom_line(aes(x = pgg45, y = upper), data = pred.ns.df,
+              linetype = 2, col = "grey50") + 
+    geom_line(aes(x = pgg45, y = lower), data = pred.ns.df,
+              linetype = 2, col = "grey50") + theme_bw()
+```
+
+
+
+### B-spline basis for natural cubic splines 
+
+```{r, echo=FALSE}
+df.ns <- 7
+z <- seq(from = 0, to = 100, by = 1)
+nsz <- data.frame(ns(z, df = df.ns, intercept = TRUE))
+names(nsz) <- paste("basis", 1:df.ns)
+nsz$z <- z
+
+nsz2 <- nsz %>% 
+  gather(paste("basis", 1:df.ns), key = basis.name, value='y')
+
+ggplot(data = nsz2, aes(x=z, y=y)) +
+  geom_line(aes(color=basis.name))
+```
+
+
+
+## Smoothing splines
+The function `smooth.spline()` can be used to fit smoothing spline models. Generalized cross-validation is used to select the degree of freedom (trace of the smoother matrix).
+
+```{r}
+fit.ss <- smooth.spline(Prostate$pgg45, Prostate$lpsa)
+fit.ss$df
+
+pred.ss <- predict(fit.ss,
+                   x = pgg45.grid)
+
+pred.ss.df <- data.frame(pred = pred.ss$y,
+                         pgg45 = pgg45.grid)
+
+p +
+geom_line(aes(x = pgg45, y = pred), data = pred.ss.df,
+          color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+## Local regression
+We perform a local polynomial regression using `loess()`.
+
+```{r}
+fit.loess <- loess(lpsa~pgg45, data = Prostate, degree = 2)
+
+#fit.loess <- loess(lpsa~pgg45, data = Prostate, degree = 2, span = 0.5 #use 50% data to fit)
+
+pred.loess <- predict(fit.loess,
+                      newdata = data.frame(pgg45 = pgg45.grid))
+
+pred.loess.df <- data.frame(pred = pred.loess,
+                            pgg45 = pgg45.grid)
+
+p + geom_line(aes(x = pgg45, y = pred), data = pred.loess.df,
+              color = rgb(.8, .1, .1, 1)) + theme_bw()
+```
+
+## Generalized additive model (GAM)
+`gam()` fits a generalized additive model (GAM) to data, the term ‘GAM’ being taken to include any quadratically penalized GLM and a variety of other models estimated by a quadratically penalised likelihood type approach. In `gam()`, built-in nonparametric smoothing terms are indicated by `s` for smoothing splines. The package `gam` also provides a function `gam()`. GCV is used to select the degree of freedom. Confidence/credible intervals are readily available for any quantity predicted using a fitted model.
+
+```{r}
+gam.m1 <- gam(lpsa ~ age + pgg45 + lcavol + lweight + lbph + svi + lcp + gleason, data = Prostate)
+
+gam.m2 <- gam(lpsa ~ age + s(pgg45) + lcavol + lweight + lbph + svi + lcp + gleason, 
+              data = Prostate)
+
+gam.m3 <- gam(lpsa ~ age + s(pgg45) + te(lcavol,lweight) + lbph + svi + lcp + gleason, 
+              data = Prostate)  #te = interaction
+
+anova(gam.m1, gam.m2, gam.m3, test = "F")
+```
+
+```{r}
+plot(gam.m2)
+
+vis.gam(gam.m3, view = c("lcavol","lweight"), 
+        color = "topo")
+
+vis.gam(gam.m3, view = c("lcavol","lweight"), 
+        color = "topo", plot.type = "contour")
+```
+
+With the current support from `caret`, you may lose a significant amount of flexibility in `mgcv`. 
+
+```{r}
+ctrl1 <- trainControl(method = "cv", number = 10)
+# you can try other options
+
+set.seed(2)
+gam.fit <- train(x, y,
+                 method = "gam",
+                 # tuneGrid = data.frame(method = "GCV.Cp", select = c(TRUE,FALSE)),
+                 trControl = ctrl1)
+
+gam.fit$bestTune
+
+gam.fit$finalModel
+```
+
+## Multivariate Adaptive Regression Splines (MARS)
+We next create a piecewise linear model using multivariate adaptive regression splines (MARS). Since there are two tuning parameters associated with the MARS model: the degree of interactions and the number of retained terms, we need to perform a grid search to identify the optimal combination of these hyperparameters that minimize prediction error
+
+```{r}
+mars_grid <- expand.grid(degree = 1:3, 
+                         nprune = 2:15)
+
+set.seed(2)
+mars.fit <- train(x, y,
+                  method = "earth",
+                  tuneGrid = mars_grid,
+                  trControl = ctrl1)
+
+ggplot(mars.fit)
+
+mars.fit$bestTune
+
+coef(mars.fit$finalModel) 
+```
+
+To better understand the relationship between these features and `lpsa`, we can create partial dependence plots (PDPs) for each feature individually and also an interaction PDP. This is used to examine the marginal effects of predictors.
+
+```{r}
+p1 <- pdp::partial(mars.fit, pred.var = c("pgg45"), grid.resolution = 10) %>% autoplot()
+
+p2 <- pdp::partial(mars.fit, pred.var = c("lcavol", "lweight"), 
+                   grid.resolution = 10) %>%
+      pdp::plotPartial(levelplot = FALSE, zlab = "yhat", drape = TRUE, 
+                       screen = list(z = 20, x = -60))
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+```{r}
+bwplot(resamples(list(mars = mars.fit,
+               gam = gam.fit)), metric = "RMSE")
+```
+
+
+MARS model seem to perform better based on RMSE. 

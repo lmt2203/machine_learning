@@ -1,0 +1,218 @@
+---
+title: "Methods for Classification II"
+author: "Yifei Sun"
+output: html_document
+
+
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message = FALSE)
+```
+
+```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
+library(caret)
+library(MASS)  #for LDA, QDA
+library(mlbench)
+library(pROC)
+library(klaR)  #for visualization and classification
+```
+
+# Diabetes data
+
+We use the Pima Indians Diabetes Database for illustration. The data contain 768 observations and 9 variables. The outcome is a binary variable `diabetes`. We start from some simple visualization of the data. (K = 3)
+
+```{r}
+data(PimaIndiansDiabetes)
+dat <- PimaIndiansDiabetes
+
+set.seed(1)
+rowTrain <- createDataPartition(y = dat$diabetes,
+                                p = 0.7,
+                                list = FALSE)
+
+# Exploratory analysis: LDA/QDA/NB based on every combination of two variables
+partimat(diabetes ~ glucose + age + mass + pedigree, 
+         data = dat, subset = rowTrain, method = "lda")  # from klaR package to do pair plots, linear boundary bc of 'lda' method
+
+partimat(diabetes ~ glucose + age + mass + pedigree, 
+         data = dat, subset = rowTrain, method = "qda")
+
+# partimat(diabetes ~ glucose + age + mass + pedigree, 
+#          data = dat, subset = rowTrain, method = "naiveBayes")
+```
+
+# LDA
+
+We use the function `lda` in library `MASS` to conduct LDA.
+
+```{r}
+lda.fit <- lda(diabetes~., data = dat,
+               subset = rowTrain)
+
+               
+plot(lda.fit)  #gives you the plot of discriminant variable
+
+lda.fit$scaling
+
+head(predict(lda.fit)$x)  #x = discriminant variable
+
+mean(predict(lda.fit)$x)
+
+dat_t <- dat[rowTrain,]
+x_n_tr <- dat_t[dat_t$diabetes == "neg", 1:8]
+x_p_tr <- dat_t[dat_t$diabetes == "pos", 1:8]
+cov.neg <- cov(x_n_tr)  #sigma pos
+cov.pos = cov(x_p_tr)   # sigma_hat neg
+n.neg <- nrow(x_n_tr)
+n.pos <- nrow(x_p_tr)
+n <- n.neg + n.pos
+K <- 2
+W <- 1/(n - K) * (cov.neg * (n.neg - 1) + cov.pos * (n.pos - 1))
+t(lda.fit$scaling) %*% W %*% lda.fit$scaling
+
+# head(as.matrix(dat[rowTrain,1:8]) %*% lda.fit$scaling -
+#        mean(as.matrix(dat[rowTrain,1:8]) %*% lda.fit$scaling))
+```
+
+```{r}
+lda.pred <- predict(lda.fit, newdata = dat[-rowTrain,])
+head(lda.pred$posterior)
+```
+
+Using caret:
+```{r}
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+set.seed(1)
+model.lda <- train(x = dat[rowTrain,1:8],
+                   y = dat$diabetes[rowTrain],
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+
+# QDA 
+
+```{r}
+qda.fit <- qda(diabetes~., data = dat,
+               subset = rowTrain)
+               
+
+summary(qda.fit )
+
+
+qda.pred <- predict(qda.fit, newdata = dat[-rowTrain,])
+head(qda.pred$posterior)
+
+set.seed(1)
+model.qda <- train(x = dat[rowTrain,1:8],
+                   y = dat$diabetes[rowTrain],
+                   method = "qda",
+                   metric = "ROC",
+                   trControl = ctrl)
+```
+
+## Naive Bayes (NB)
+
+There is one practical issue with the NB classifier when nonparametric estimators are used. When a new data point includes a feature value that never occurs for some response class, the posterior probability can become zero. To avoid this, we increase the count of the value with a zero occurrence to a small value, so that the overall probability doesn't become zero. In practice, a value of one or two is a common choice. 
+This correction is called "Laplace Correction," and is implemented via the parameter `fL`. The parameter `adjust` adjusts the bandwidths of the kernel density estimates, and a larger value means a more flexible estimate.
+
+```{r, warning=FALSE}
+set.seed(1)
+
+nbGrid <- expand.grid(usekernel = c(FALSE,TRUE),
+                      fL = 1, 
+                      adjust = seq(.2, 3, by = .2))
+
+model.nb <- train(x = dat[rowTrain,1:8],
+                  y = dat$diabetes[rowTrain],
+                  method = "nb",
+                  tuneGrid = nbGrid,
+                  metric = "ROC",
+                  trControl = ctrl)
+
+plot(model.nb)
+```
+
+
+```{r}
+res <- resamples(list(LDA = model.lda, QDA = model.qda, NB = model.nb))
+summary(res)
+```
+
+Now let's look at the test set performance.
+```{r}
+lda.pred <- predict(model.lda, newdata = dat[-rowTrain,], type = "prob")[,2]
+nb.pred <- predict(model.nb, newdata = dat[-rowTrain,], type = "prob")[,2]
+qda.pred <- predict(model.qda, newdata = dat[-rowTrain,], type = "prob")[,2]
+
+
+roc.lda <- roc(dat$diabetes[-rowTrain], lda.pred)
+roc.nb <- roc(dat$diabetes[-rowTrain], nb.pred)
+roc.qda <- roc(dat$diabetes[-rowTrain], qda.pred)
+
+
+auc <- c(roc.lda$auc[1], roc.qda$auc[1], roc.nb$auc[1])
+
+plot(roc.lda, legacy.axes = TRUE)
+plot(roc.qda, col = 2, add = TRUE)
+plot(roc.nb, col = 3, add = TRUE)
+
+modelNames <- c("lda","qda","nb")
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
+       col = 1:3, lwd = 2)
+```
+
+# Iris data (K = 3)
+
+The famous iris data! Contains 4 predictors and a class label 
+
+```{r}
+data(iris)
+dat2 <- iris
+dat2$Species
+
+
+featurePlot(x = dat2[, 1:4], 
+            y = dat2$Species,
+            scales = list(x=list(relation="free"), 
+                          y=list(relation="free")),
+            plot = "density", pch = "|", 
+            auto.key = list(columns = 3))
+
+lda.fit2 <- lda(Species~., data = dat2)
+plot(lda.fit2, col = as.numeric(dat2$Species), abbrev = TRUE)
+
+ctrl2 <- trainControl(method = "cv")
+
+set.seed(1)
+model.lda2 <- train(x = dat2[,1:4],
+                   y = dat2$Species,
+                   method = "lda",
+                   trControl = ctrl2)
+
+set.seed(1)
+model.qda2 <- train(x = dat2[,1:4],
+                   y = dat2$Species,
+                   method = "qda",
+                   trControl = ctrl2)
+
+set.seed(1)
+model.nb2 <- train(x = dat2[,1:4],
+                   y = dat2$Species,
+                   method = "nb",
+                   tuneGrid = nbGrid,  #make sure to try other tuneGrid
+                   #metric = "Kappa" to select tuning parameter
+                   trControl = ctrl2)
+
+
+res2 <- resamples(list(LDA = model.lda2, 
+                       QDA = model.qda2,
+                       NB = model.nb2))
+summary(res2)
+```
+
+

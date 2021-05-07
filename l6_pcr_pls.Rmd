@@ -1,0 +1,211 @@
+---
+title: 'Lecture 6: PCR and PLS'
+author: "Linh Tran"
+date: "2/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ISLR)
+library(pls)   #partial least square method
+library(caret)
+```
+
+Predict a baseball player's salary on the basis of various statistics associated with performance in the previous year. (use ?Hitters for more details)
+  
+```{r}
+data(Hitters)
+Hitters = na.omit(Hitters)
+
+set.seed(2021)
+trRows = createDataPartition(Hitters$Salary,
+                             p = 0.75,
+                             list = F)
+
+# training data
+x = model.matrix(Salary ~., Hitters)[trRows, -1]
+y = Hitters$Salary[trRows]
+
+# test data
+x2 = model.matrix(Salary ~., Hitters)[-trRows, -1]
+y2 = Hitters$Salary[-trRows]
+```
+  
+# Principal Components Regression (PCR)
+
+We fit the PCR model using the function `pcr()`. (Check `mvr` function)
+
+```{r}
+set.seed(2)
+
+pcr.mod = pcr(Salary ~ . ,
+              data = Hitters[trRows,],
+              scale = TRUE, #scale = FALSE by default
+              validation = "CV")
+
+summary(pcr.mod)
+
+validationplot(pcr.mod, val.type = "MSEP", legendpos = "topright")
+
+cv.mse <- RMSEP(pcr.mod)
+ncomp.cv = which.min(cv.mse$val[1,,])-1  #-1 bc of intercept
+ncomp.cv  
+
+#predicted y values of new data
+predy2.pcr = predict(pcr.mod, newdata = Hitters[-trRows,],
+                     ncomp = ncomp.cv)
+
+# test MSE
+mean((y2 - predy2.pcr)^2)
+
+```
+
+
+# Partial Least Squares (PLS)
+
+We fit the PLS model using the function `plsr()` - default fit method is kernelpls
+
+```{r}
+set.seed(2)
+
+pls.mod = plsr(Salary ~.,
+               data = Hitters[trRows,],
+               scale = TRUE,
+               validation = "CV")
+
+summary(pls.mod)
+
+validationplot(pls.mod, val.type = "MSEP", legendpos = "topright")
+
+cv.mse = RMSEP(pls.mod)
+
+ncomp.cv = which.min(cv.mse$val[1,,])-1
+ncomp.cv
+
+predy2.pls = predict(pls.mod, newdata = Hitters[-trRows,],
+                     ncomp = ncomp.cv)
+
+# test MSE
+mean((y2 - predy2.pls)^2)
+
+```
+
+
+# PCR and PLS using `caret`
+
+## PCR
+
+```{r}
+ctrl1 = trainControl(method = "cv",
+                     selectionFunction = "best") # "oneSE" for the 1SE rule
+
+# show information about the model
+modelLookup("pcr")
+
+modelLookup("pls")
+
+# Two way for standardizing predictors
+
+# train(..., preProc = c("center", "scale"))
+set.seed(2)
+
+pcr.fit = train(x, y, 
+                method = "pcr",
+                tuneGrid = data.frame(ncomp = 1:19),
+                trControl = ctrl1,
+                preProcess = c("center", "scale"))
+
+predy2.pcr = predict(pcr.fit, newdata = x2)
+
+mean((y2 - predy2.pcr2)^2)
+                     
+#pcr(..., scale = TRUE)
+
+set.seed(2)
+
+pcr.fit2 = train(x,y,
+                 method = "pcr",
+                 tuneGrid = data.frame(ncomp = 1:19),
+                 trControl = ctrl1,
+                 scale = TRUE)
+
+predy2.pcr3 = predict(pcr.fit, newdata = x2)
+
+mean((y2 - predy2.pcr2)^2)
+
+# pcr(..., scale = TRUE)
+
+set.seed(2)
+
+pcr.fit2 = train(x, y,
+                 method = "pcr",
+                 tuneGrid = data.frame(ncomp = 1:19),
+                 trControl = ctrl1,
+                 scale = TRUE)
+
+predy2.pcr3 = predict(pcr.fit, newdata = x2)
+
+mean((y2 - predy2.pcr3)^2)
+
+ggplot(pcr.fit, highlight = TRUE) + theme_bw()
+
+```
+
+
+## PLS
+
+```{r}
+set.seed(2)
+
+pls.fit = train(x, y,
+                method = "pls",
+                tuneGrid = data.frame(ncomp = 1:19),
+                trControl = ctrl1,
+                preProcess = c("center", "scale"))    
+
+predy2.pls2 = predict(pls.fit, newdata = x2)
+
+mean((y2 - predy2.pls2)^2)
+
+ggplot(pls.fit, highlight = TRUE)
+```
+
+
+Here are some old codes on ridge, lasso and ordinary least squares
+
+```{r}
+set.seed(2)
+
+ridge.fit = train(x, y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 0,
+                                         lambda = exp(seq(-1, 10, length = 100))),
+                  trControl = ctrl1)
+
+predy2.ridge = predict(ridge.fit, newdata = x2)
+
+set.seed(2)
+lasso.fit = train(x, y,
+                  method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1, 
+                                         lambda = exp(seq(-1, 5, length = 100))),
+                  #preProc = c("center", "scale"),
+                  trControl = ctrl1)
+
+predy2.lasso = predict(lasso.fit, newdata = x2)
+
+```
+
+Comparing the models based on resampling results
+
+```{r}
+resamp = resamples(list(lasso = lasso.fit,
+                        ridge = ridge.fit,
+                        pcr = pcr.fit,
+                        pls = pls.fit))
+
+summary(resamp)
+
+bwplot(resamp, metric = "RMSE")
+```
+
