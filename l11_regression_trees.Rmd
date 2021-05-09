@@ -95,7 +95,11 @@ The `cptable` in the fit contains the mean and standard deviation of the errors 
 printcp(tree1)  #variables used in tree construction are usually important
 # number of terminal nodes = nsplit + 1
 # pick one with the smallest error 
+
 cpTable <- tree1$cptable
+# nsplit = size of tree - 1 (nsplits = 1 => size of tree/terminal nodes = 2)
+# root node error = RSS/n
+# xerror = cross-validation error **use this to select size of tree based on smallest xerror**
 plotcp(tree1)
 ```
 
@@ -103,7 +107,8 @@ Prune the tree based on the `cp` table.
 
 ```{r}
 # minimum cross-validation error
-minErr <- which.min(cpTable[,4])
+minErr <- which.min(cpTable[,4]) #extract smallest cp table according to xerror (4th column)
+
 tree3 <- prune(tree1, cp = cpTable[minErr,1])  #final tree
 
 rpart.plot(tree3)
@@ -112,11 +117,14 @@ plot(as.party(tree3)) #boxplot show the distribution of the data
 
 summary(tree3)
 # 2 types of splits: primary splits and surrogate splits 
-# surrogate splits is used when data contain missing values 
+## primary splits
+## surrogate splits is used when data contain missing values in predictors. 
+# variable importance: provide some insights but cannot make conclusion base on this. 
 
+# 2x2 table 
 with(Hitters[trRows,], table(cut(CRBI, c(-Inf, 307.5, Inf)), #primary
                              cut(CAtBat, c(-Inf, 2316.5, Inf)))) #surrogate
-# 2x2 table 
+
 ```
 
 
@@ -138,7 +146,8 @@ predict(tree3, newdata = Hitters[-trRows,])
 
 ```{r}
 Hitters2 <- Hitters
-Hitters2$CRBI[sample(1:nrow(Hitters2), 50)] <- NA
+
+Hitters2$CRBI[sample(1:nrow(Hitters2), 50)] <- NA  #randomly select 50 obs and randomly assign CRBI values as NA
 
 set.seed(1)
 tree_m <- rpart(Salary ~ . ,  
@@ -147,6 +156,7 @@ tree_m <- rpart(Salary ~ . ,
                 control = rpart.control(cp = 0))
 
 cpTable_m <- tree_m$cptable
+
 tree2_m <- prune(tree_m, cp = cpTable_m[which.min(cpTable_m[,4]),1])
 
 summary(tree_m, cp = cpTable_m[which.min(cpTable_m[,4]),1])
@@ -157,7 +167,7 @@ head(predict(tree2_m, newdata = Hitters2[-trRows,]))
 ## Conditional inference trees (CIT)
 
 The implementation utilizes a unified framework for conditional inference, or permutation tests. Unlike CART, the stopping criterion is based on p-values. A split is implemented when (1 - p-value) exceeds the value given by `mincriterion` as specified in `ctree_control()`. This approach ensures that the right-sized tree is grown without additional pruning or cross-validation, but can stop early. At each step, the splitting variable is selected as the input variable with strongest association to the response (measured by a p-value corresponding to a test for the partial null hypothesis of a single input variable and the response). Such a splitting procedure can avoid a variable selection bias towards predictors with many possible cutpoints.
-
+:
 ```{r, fig.height=4, fig.width=8}
 tree5 <- ctree(Salary ~ . , Hitters,
                subset = trRows)
@@ -170,6 +180,7 @@ Note that `tree5` is a `party` object. The function `predict()` can be used for 
 head(predict(tree5, newdata = Hitters[-trRows,]))
 ```
 
+
 ## `caret`
 
 
@@ -177,12 +188,15 @@ head(predict(tree5, newdata = Hitters[-trRows,]))
 ctrl <- trainControl(method = "cv")
 
 set.seed(1)
+
 rpart.fit <- train(Salary ~ . , 
                    Hitters[trRows,], 
                    method = "rpart",
-                   tuneGrid = data.frame(cp = exp(seq(-6,-2, length = 50))),
+                   tuneGrid = data.frame(cp = exp(seq(-6,-2, length = 50))), 
                    trControl = ctrl)
-ggplot(rpart.fit, highlight = TRUE)
+
+ggplot(rpart.fit, highlight = TRUE) #diamond shape is the chosen cp
+
 rpart.plot(rpart.fit$finalModel)
 ```
 
@@ -200,14 +214,18 @@ plot(ctree.fit$finalModel)
 ```
 
 
+Compare the CART and Ctree approach:
+
 ```{r}
 summary(resamples(list(rpart.fit, ctree.fit)))
 ```
 
 ```{r}
-RMSE(predict(rpart.fit, newdata = Hitters[-trRows,]), Hitters$Salary[-trRows])
+RMSE(predict(rpart.fit, newdata = Hitters[-trRows,]), Hitters$Salary[-trRows]) #smaller RMSE
 RMSE(predict(ctree.fit, newdata = Hitters[-trRows,]), Hitters$Salary[-trRows])
 ```
+
+when compare the mean rpart is worse but median rpart is better, so they are pretty similar. But if you choose base on mean then ctree. 
 
 # Classification trees
 
@@ -240,9 +258,22 @@ plotcp(tree1)
 
 # minimum cross-validation error; may also use the 1SE rule
 minErr <- which.min(cpTable[,4])
+
 tree2 <- prune(tree1, cp = cpTable[minErr,1])
+
 rpart.plot(tree2)
+
 summary(tree2)
+
+
+#1SE rule
+tree3 <- prune(tree1, 
+               cp = cpTable[cpTable[,4]<cpTable[minErr,4]+cpTable[minErr,5],1][1])
+plot(tree3)
+rpart.plot(tree3)
+
+summary(tree3)
+
 ```
 
 ## `ctree`
@@ -250,7 +281,7 @@ summary(tree2)
 ```{r, fig.height=6, fig.width=10}
 tree2 <- ctree(formula = diabetes ~ . , 
                data = dat,
-               subset = rowTrain)
+               subset = rowTrain) #default setting p value 0.05
 
 plot(tree2)
 ```
@@ -262,7 +293,7 @@ plot(tree2)
 ```{r}
 ctrl <- trainControl(method = "cv",
                      summaryFunction = twoClassSummary,
-                     classProbs = TRUE)
+                     classProbs = TRUE)  
 
 set.seed(1)
 rpart.fit <- train(diabetes ~ . , 
@@ -271,7 +302,7 @@ rpart.fit <- train(diabetes ~ . ,
                    method = "rpart",
                    tuneGrid = data.frame(cp = exp(seq(-6,-3, len = 50))),
                    trControl = ctrl,
-                   metric = "ROC")
+                   metric = "ROC") #derfault setting Kappa and accuracy
 ggplot(rpart.fit, highlight = TRUE)
 rpart.plot(rpart.fit$finalModel)
 ```
@@ -287,14 +318,22 @@ ctree.fit <- train(diabetes ~ . , dat,
                    metric = "ROC",
                    trControl = ctrl)
 ggplot(ctree.fit, highlight = TRUE)
+
+#p-value threshold is larger => easier to split, bigger tree
+plot(ctree.fit$finalModel)
 ```
+
+Compare two models
 
 ```{r, fig.width=15, fig.height=6}
-plot(ctree.fit$finalModel)
+
 summary(resamples(list(rpart.fit, ctree.fit)))
+
+#2 models very close to each other => can report both of them.
 ```
 
 
+Making prediction:
 
 ```{r}
 rpart.pred <- predict(tree1, newdata = dat[-rowTrain,])[,1]

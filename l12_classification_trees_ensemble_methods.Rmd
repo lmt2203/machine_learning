@@ -1,23 +1,11 @@
 ---
 title: "Ensemble Methods"
-author: "Yifei Sun"
-output:
-  pdf_document:
-    toc: yes
-    toc_depth: 2
-  html_document:
-    df_print: paged
-    toc: yes
-    toc_depth: '2'
-header-includes:
-- \usepackage{fancyhdr}
-- \usepackage{lipsum}
-- \pagestyle{fancy}
-- \fancyhead[R]{\thepage}
-- \fancypagestyle{plain}{\pagestyle{fancy}}
---- 
+author: "Linh Tran"
+output: 
+   html_document:
+     toc: true
 
-\newpage
+
 
 
 ```{r setup, include=FALSE}
@@ -25,13 +13,19 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning=FALSE)
 ```
 
 ```{r, echo = T, message = FALSE, results='hide', warning=FALSE}
-library(ISLR)
-library(mlbench)
+
+library(ISLR) # for data
+library(mlbench) # for data
+
+
 library(caret)
-library(randomForest)
-library(ranger)
-library(gbm)
-library(pdp)
+library(randomForest)  #RF
+library(ranger)   #faster implementation of RF algorithm => good for high dimensional dataset
+
+library(gbm)  #boosting (both general and binary)
+
+library(pdp) #partial dependence plot
+
 library(pROC)
 ```
 
@@ -51,29 +45,34 @@ trRows <- createDataPartition(Hitters$Salary,
 
 ## Bagging and Random forests
 
-The function `randomForest()` implements Breiman's random forest algorithm (based on Breiman and Cutler's original Fortran code) for classification and regression. `ranger()` is a fast implementation of Breiman's random forests, particularly suited for high dimensional data.
+The function `randomForest()` implements Breiman's random forest algorithm (based on Breiman and Cutler's original Fortran code) for classification and regression. `ranger()` is a fast implementation of Breiman's random forests, particularly suited for high dimensional data.\
+
+Bagging is a special case of RF if m = p
 
 ```{r}
 set.seed(1)
 bagging <- randomForest(Salary ~ . , 
                         Hitters,
                         subset = trRows,
-                        mtry = 19)
+                        mtry = 19)  #number of predictors 
+#another argument: nodesize = min of obs within each terminal node default = 5, for classification default = 1 => growing very large tree by default
 
 set.seed(1)
 rf <- randomForest(Salary ~ . , 
                    Hitters,
                    subset = trRows,
-                   mtry = 6)
+                   mtry = 6)   #default mtry = p/3 
 
 # fast implementation
 set.seed(1)
 rf2 <- ranger(Salary ~ . , 
               Hitters[trRows,],
               mtry = 6) 
+#argument `min.node.size`
 
-pred.rf <- predict(rf, newdata = Hitters[-trRows,])
-pred.rf2 <- predict(rf2, data = Hitters[-trRows,])$predictions
+pred.rf <- predict(rf, newdata = Hitters[-trRows,]) #predict rf, output is vector
+pred.rf2 <- predict(rf2, data = Hitters[-trRows,])$predictions #predict ranger, output is list => has to extract predictions using dollar sign then it will be vector
+#caret: predict.train
 
 RMSE(pred.rf, Hitters$Salary[-trRows])
 RMSE(pred.rf2, Hitters$Salary[-trRows])
@@ -83,23 +82,30 @@ RMSE(pred.rf2, Hitters$Salary[-trRows])
 ## Boosting
 
 We first fit a gradient boosting model with Gaussian loss function.
+Boosting has more tuning parameters and is more sensitive to model training => has to trian model more carefully.
 
 ```{r}
 set.seed(1)
+
+#`gbm` package
+
 bst <- gbm(Salary ~ . , 
            Hitters[trRows,],
-           distribution = "gaussian",
-           n.trees = 5000, 
-           interaction.depth = 3,
-           shrinkage = 0.005,
-           cv.folds = 10, 
+           distribution = "gaussian", #for regression
+           n.trees = 5000, #B 
+           interaction.depth = 3, #d = 1 by default
+           shrinkage = 0.005, #lambda
+           cv.folds = 10, #cv determines optimal n.trees
            n.cores = 2)
+# bag.fraction = 0.5: 50% of training data is used to grow trees
 ```
 
 We plot loss function as a result of number of trees added to the ensemble.
 
 ```{r}
 gbm.perf(bst, method = "cv")
+# x-axis = B (number of iteration), up to 5000
+# 2 curves: 1 is training error (black), 1 is cv error (green). Select B that gives smallest cv error. = 1555 
 ```
 
 
@@ -111,9 +117,10 @@ We use the fast implementation of random forest when tuning the model.
 ctrl <- trainControl(method = "cv") 
 
 # Try more if possible
-rf.grid <- expand.grid(mtry = 1:19,
+rf.grid <- expand.grid(mtry = 1:19, #number of selected variable at each split
                        splitrule = "variance",
-                       min.node.size = 1:6)
+                       min.node.size = 1:6) # min terminal node size, can try higher
+                       
 set.seed(1)
 rf.fit <- train(Salary ~ . , 
                 Hitters[trRows,], 
@@ -122,16 +129,22 @@ rf.fit <- train(Salary ~ . ,
                 trControl = ctrl)
 
 ggplot(rf.fit, highlight = TRUE)
+
+rf.fit$bestTune #extract using besttune from train object
+
+
 ```
 
-We then tune the `gbm` model.
+We then tune the `gbm` model.Tuning more parameters: 
 
 ```{r}
 # Try more 
-gbm.grid <- expand.grid(n.trees = c(2000,3000,4000),
-                        interaction.depth = 1:4,
-                        shrinkage = c(0.001,0.003,0.005),
-                        n.minobsinnode = c(1,10))
+gbm.grid <- expand.grid(n.trees = c(2000,3000,4000), #B
+                        interaction.depth = 1:4, #d
+                        shrinkage = c(0.001,0.003,0.005),  #lambda
+                        n.minobsinnode = c(1,10))  #in caret used as tuning parameter
+                      
+                        
 set.seed(1)
 gbm.fit <- train(Salary ~ . , 
                  Hitters[trRows,], 
@@ -141,6 +154,8 @@ gbm.fit <- train(Salary ~ . ,
                  verbose = FALSE)
 
 ggplot(gbm.fit, highlight = TRUE)
+
+# n.minobsinnode = 1 works better
 ```
 
 It takes a while to train the `gbm` even with a rough tuning grid. The `xgboost` package provides an efficient implementation of gradient boosting framework (approximately 10x faster than `gbm`). You can find much useful information here: https://github.com/dmlc/xgboost/tree/master/demo.
@@ -150,8 +165,12 @@ Compare the cross-validation performance. You can also compare with other models
 ```{r}
 resamp <- resamples(list(rf = rf.fit, gbm = gbm.fit))
 summary(resamp)
+
+#gbm gives smaller error
 ```
 
+
+ 
 ## Global interpretation
 ### Variable importance
 
@@ -161,15 +180,15 @@ We can extract the variable importance from the fitted models. In what follows, 
 set.seed(1)
 rf2.final.per <- ranger(Salary ~ . , 
                         Hitters[trRows,],
-                        mtry = rf.fit$bestTune[[1]], 
+                        mtry = rf.fit$bestTune[[1]], #optimal tuning parameter
                         splitrule = "variance",
-                        min.node.size = rf.fit$bestTune[[3]],
-                        importance = "permutation",
+                        min.node.size = rf.fit$bestTune[[3]], #optimal tuning parameter
+                        importance = "permutation",  #default setting importance = none
                         scale.permutation.importance = TRUE) 
 
 barplot(sort(ranger::importance(rf2.final.per), decreasing = FALSE), 
         las = 2, horiz = TRUE, cex.names = 0.7,
-        col = colorRampPalette(colors = c("cyan","blue"))(19))
+        col = colorRampPalette(colors = c("cyan","blue"))(19)) #generate 19 colors
 
 set.seed(1)
 rf2.final.imp <- ranger(Salary ~ . , 
