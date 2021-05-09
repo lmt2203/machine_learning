@@ -225,6 +225,8 @@ p2 <- partial(gbm.fit, pred.var = "CRBI",
 grid.arrange(p1, p2, nrow = 1)
 ```
 
+Distribution of CRBI variable in training data (rug = TRUE)
+
 # Classification
 
 We use the Pima Indians Diabetes Database for illustration. The data contain 768 observations and 9 variables. The outcome is a binary variable `diabetes`. 
@@ -258,17 +260,19 @@ set.seed(1)
 rf2 <- ranger(diabetes ~ . , 
               dat[rowTrain,],
               mtry = 3, 
-              probability = TRUE) 
+              probability = TRUE) #need to specify prob for classification
 
-rf.pred <- predict(rf, newdata = dat[-rowTrain,], type = "prob")[,1]
+rf.pred <- predict(rf, newdata = dat[-rowTrain,], type = "prob")[,1]   #1st column 
 rf2.pred <- predict(rf2, data = dat[-rowTrain,], type = "response")$predictions[,1]
 ```
 
 ## Boosting
 
+Gbm doesn't take categorical outcome => need to convert to binary 
+
 ```{r}
 dat2 <- dat
-dat2$diabetes <- as.numeric(dat$diabetes == "pos")
+dat2$diabetes <- as.numeric(dat$diabetes == "pos") #convert positive to 1
 
 set.seed(1)
 bst <- gbm(diabetes ~ . , 
@@ -323,7 +327,7 @@ gbmA.fit <- train(diabetes ~ . ,
                   tuneGrid = gbmA.grid,
                   trControl = ctrl,
                   method = "gbm",
-                  distribution = "adaboost",
+                  distribution = "adaboost", #gbm 
                   metric = "ROC",
                   verbose = FALSE)
 
@@ -332,11 +336,14 @@ ggplot(gbmA.fit, highlight = TRUE)
 gbmA.pred <- predict(gbmA.fit, newdata = dat[-rowTrain,], type = "prob")[,1]
 ```
 
+Should use caret to tune lambda. 
 
 ```{r}
 resamp <- resamples(list(rf = rf.fit, 
                          gbmA = gbmA.fit))
 summary(resamp)
+
+#boosting is better based on RMSE
 ```
 
 ## Global interpretation
@@ -394,6 +401,7 @@ pdp.gbm <- gbmA.fit %>%
 grid.arrange(pdp.rf, pdp.gbm, nrow = 1)
 ```
 
+For RF, yhat is the predicted probability => f function = probability of Y = 1 given X (average change in predicted probability when you vary glucose).
 
 
 ```{r}
@@ -410,4 +418,4 @@ legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
        col = 1:2, lwd = 2)
 ```
 
-
+Ensemble methods are better => don't stop at tree.
